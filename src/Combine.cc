@@ -1146,8 +1146,9 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
   if (saveWorkspace_) {
     w->SetName(workspaceName_.c_str());
     w->loadSnapshot("clean");
-    outputFile->WriteTObject(w,workspaceName_.c_str());
-  }  
+    outputFile->WriteTObject(w->getSnapshot("MultiDimFit"), "MultiDimFit");
+    // outputFile->WriteTObject(w,workspaceName_.c_str());
+  }
 
 }
 
