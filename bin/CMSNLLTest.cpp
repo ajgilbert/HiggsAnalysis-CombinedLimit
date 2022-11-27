@@ -5,6 +5,8 @@
 #include <Minuit2/MnPrint.h>
 #include <Math/IOptions.h>
 #include "TRandom3.h"
+#include <TStopwatch.h>
+
 #include "Math/Functor.h"
 #include "Math/RichardsonDerivator.h"
 #include "../interface/CMSNLLTest.h"
@@ -21,17 +23,22 @@ void TestAnalyticGrad() {
 }
 
 int main(int argc, char* argv[]) {
-  unsigned gen_pars = 10;
+  unsigned gen_pars_gaus = 2000;
+  unsigned gen_pars_pois = 2000;
   TRandom3 rng;
   CMSNLL nllf;
 
-  for (unsigned i = 0; i < gen_pars; ++i) {
+  for (unsigned i = 0; i < gen_pars_gaus; ++i) {
     nllf.AddGaussianConstraint(rng.Gaus(0, 1), 1);
+  }
+  for (unsigned i = 0; i < gen_pars_pois; ++i) {
+    nllf.AddPoissonConstraint(std::max(1., double(int(rng.Gaus(30, 5) + 0.5))));
   }
   ROOT::Fit::Fitter fitter;
   fitter.Config().SetParamsSettings(nllf.GetParameters());
-  // fitter.SetFCN(nllf);
-  fitter.SetFCN((ROOT::Math::IMultiGenFunction&)nllf);
+  nllf.SetZeroPoint(fitter.Config().ParamsValues().data());
+  fitter.SetFCN(nllf);
+  // fitter.SetFCN((ROOT::Math::IMultiGenFunction&)nllf);
 
   fitter.Config().SetMinimizer("Minuit2", "Migrad");
   auto & opts = fitter.Config().MinimizerOptions();
@@ -40,8 +47,12 @@ int main(int argc, char* argv[]) {
   opts.SetErrorDef(0.5);
   opts.SetPrintLevel(10);
   opts.SetStrategy(0);
+  TStopwatch tw;
+  tw.Start();
   fitter.FitFCN();
-  fitter.CalculateHessErrors();
+  tw.Stop();
+  std::cout << ">> Fit in " << tw.RealTime() << std::endl;
+  // fitter.CalculateHessErrors();
 
   return 0;
 }
