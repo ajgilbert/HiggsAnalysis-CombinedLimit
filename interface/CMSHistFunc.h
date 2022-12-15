@@ -12,6 +12,7 @@
 #include "Rtypes.h"
 #include "TH1F.h"
 #include "TMatrix.h"
+#include "TSpline.h"
 #include "HiggsAnalysis/CombinedLimit/interface/CMSHistV.h"
 #include "HiggsAnalysis/CombinedLimit/interface/FastTemplate_Old.h"
 #include "HiggsAnalysis/CombinedLimit/interface/SimpleCacheSentry.h"
@@ -32,6 +33,9 @@ class CMSHistFunc : public RooAbsReal {
     std::vector<double> sigmas;
     std::vector<double> slopes;
     std::vector<double> offsets;
+
+    std::vector<TGraph> bin_vals;
+    std::vector<TSpline3> spline_interps;
   };
 
   struct Cache {
@@ -57,10 +61,11 @@ class CMSHistFunc : public RooAbsReal {
     double sigma;
 
     bool meansig_set = false;
+    
   };
 
  public:
-  enum HorizontalType { Closest, Integral, Moment };
+  enum HorizontalType { Closest, Integral, Moment, PerBinSpline };
 
   enum MomentSetting {
     Linear,

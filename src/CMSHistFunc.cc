@@ -9,6 +9,7 @@
 #include "RooAbsData.h"
 #include "RooAbsReal.h"
 #include "TH1F.h"
+#include "TFile.h"
 #include "TVector.h"
 #include "TMatrix.h"
 #include "vectorized.h"
@@ -172,6 +173,18 @@ void CMSHistFunc::setGlobalCache() const {
     global_.sigmas.resize(hpoints_[0].size(), 0.);
     global_.slopes.resize(hpoints_[0].size(), 0.);
     global_.offsets.resize(hpoints_[0].size(), 0.);
+
+    TFile fout(TString::Format("spline_test_%s.root", this->GetName()), "RECREATE");
+    for (unsigned ib = 0; ib < cache_.size(); ++ib) {
+      std::vector<double> contents(hpoints_[0].size(), 0.);
+      for (unsigned i = 0; i < hpoints_[0].size(); ++i) {
+        contents[i] = storage_[getIdx(0, i, 0, 0)][ib];
+      }
+      global_.bin_vals.emplace_back(hpoints_[0].size(), hpoints_[0].data(), contents.data());
+      global_.bin_vals.back().Write(TString::Format("bin_%i", ib));
+    }
+    fout.Close();
+
   }
 }
 
