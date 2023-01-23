@@ -55,6 +55,8 @@ struct Channel {
   // Intermediate parts of the calculation
   std::vector<double> y; // [bins]
   std::vector<double> nll_y; // [bins]
+
+  std::vector<unsigned>  rp_slot; // Where to send the rateParam NLL derivatives [rp]
   std::vector<std::vector<double>> dy_rp; // [rp][bins]
   std::vector<std::vector<double>> dnll_y_rp; // [rp][bins]
   double nll;
@@ -77,31 +79,31 @@ struct Channel {
 
 class CMSNLL : public ROOT::Math::IMultiGradFunction {
 private:
-  std::vector<Parameter> params_;
+  mutable std::vector<Parameter> params_;
   std::map<std::string, unsigned> param_lookup_;
-  std::vector<Channel> channels_;
+  mutable std::vector<Channel> channels_;
 
   std::vector<double> gaus_mean_;
   std::vector<double> gaus_scale_;
   std::vector<double> pois_obs_;
   std::vector<double> pois_offset_;
-  double DoEval(const double* x) const override;
-  double DoDerivative(const double* x, unsigned int icoord) const override;
   mutable std::vector<double> prev_x_;
   void CheckChanges(const double* x) const;
   double zero_point_ = 0.;
 
-  double nll_; // The cached NLL value
-  std::vector<double> dnll_; // The cached derivatives [N params]
+  mutable double nll_; // The cached NLL value
+  mutable std::vector<double> dnll_; // The cached derivatives [N params]
 
-  template<class T>
-  std::string FmtVec(std::vector<T> vec, std::string fmt) const;
 
 public:
   int debug = 0;
   CMSNLL(){};
   ~CMSNLL() override{};
+  template<class T>
+  std::string FmtVec(std::vector<T> vec, std::string fmt) const;
   ROOT::Math::IMultiGradFunction* Clone() const override;
+  double DoEval(const double* x) const override;
+  double DoDerivative(const double* x, unsigned int icoord) const override;
   unsigned int NDim() const override;
   void Gradient(const double* x, double* grad) const override;
   // void FdF(const double* x, double& f, double* df) const override;
@@ -128,7 +130,7 @@ public:
   void SetZeroPoint(const double* x);
   void SetParameter(unsigned par, double val);
 
-  double evaluate();
+  double evaluate(bool dograd) const;
   std::vector<ROOT::Fit::ParameterSettings> GetParameters() const;
 };
 
