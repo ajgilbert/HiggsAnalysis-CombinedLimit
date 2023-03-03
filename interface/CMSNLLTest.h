@@ -31,14 +31,21 @@ struct KappaValue {
 struct Proc {
   double N0 = 1.;
   std::vector<unsigned> rp;
+  // std::vector<unsigned> k;
+  // std::vector<double> logkappa;
   std::vector<double> y;
 };
 
 struct ProcCache {
   double N = 0.;
+  double k_tot = 0.;
+  double rp_tot = 0.;
   std::vector<double> dN_rp;
   std::vector<double> dN_rp_work;
-  std::vector<unsigned> chn_slot; // Where to send the output in the channel dy_rp vector
+  // std::vector<double> dN_k; // = N * logkappa_i
+  // std::vector<unsigned> chn_slot; // Where to send the output in the channel dy_rp vector
+
+  void init(Proc const& p);
 };
 
 struct Channel {
@@ -56,15 +63,22 @@ struct Channel {
   std::vector<double> y; // [bins]
   std::vector<double> nll_y; // [bins]
 
+  std::vector<double> dy_work;
+  std::vector<double> dnll_y_work;
+
   std::vector<unsigned>  rp_slot; // Where to send the rateParam NLL derivatives [rp]
-  std::vector<std::vector<double>> dy_rp; // [rp][bins]
-  std::vector<std::vector<double>> dnll_y_rp; // [rp][bins]
+  std::vector<std::vector<unsigned>> rp_procs;
+  std::vector<std::vector<unsigned>> rp_proc_slots;
+
+  std::vector<unsigned> lnN_slot;
+  std::vector<std::vector<unsigned>> lnN_procs;
+  std::vector<std::vector<double>> lnN_logkappas;
+
+  // std::vector<std::vector<double>> dy_rp; // [rp][bins]
+  // std::vector<std::vector<double>> dnll_y_rp; // [rp][bins]
   double nll;
   std::vector<double> dnll_rp; // [rp]
-  // std::vector<double> N; // [procs]
-  // std::vector<std::vector<double>> dy_rp;
-  // std::vector<std::vector<double>> dN_drp; // yield derivatives [ir][ib]
-  // std::vector<std::vector<KappaValue>> lnN_table;
+
 
   Channel(unsigned b, unsigned p);
   // void AddLogNormal(unsigned proc, unsigned param, double kappa);
@@ -83,6 +97,7 @@ private:
   std::map<std::string, unsigned> param_lookup_;
   mutable std::vector<Channel> channels_;
 
+  std::vector<unsigned> gaus_slot_;
   std::vector<double> gaus_mean_;
   std::vector<double> gaus_scale_;
   std::vector<double> pois_obs_;
@@ -119,13 +134,14 @@ public:
   void SetTemplate(unsigned chn, unsigned proc, std::vector<double> const& x);
   void SetData(unsigned chn, std::vector<double> const& x);
 
-  void PrintModel();
+  void PrintModel() const;
   void AddRateParam(unsigned par, unsigned chn, std::vector<unsigned> procs);
+  void AddLogNormal(unsigned par, unsigned chn, std::vector<unsigned> const& proc, std::vector<double> const& kappa);
   // void AddLogNormal(std::string const& name, unsigned chn, unsigned proc, double kappa);
 
   void EvalLogNormal(std::vector<KappaValue> const& kvals, std::vector<double>& result);
 
-  void AddGaussianConstraint(double mean, double width);
+  void AddGaussianConstraint(unsigned par, double mean, double width);
   void AddPoissonConstraint(double obs);
   void SetZeroPoint(const double* x);
   void SetParameter(unsigned par, double val);

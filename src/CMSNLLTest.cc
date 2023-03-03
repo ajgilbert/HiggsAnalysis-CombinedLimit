@@ -1,4 +1,5 @@
 #include "../interface/CMSNLLTest.h"
+#include <algorithm>
 #include <iostream>
 #include <numeric>
 #include <stdexcept>
@@ -30,6 +31,9 @@ Channel::Channel(unsigned b, unsigned p) : bins(b), procs(p) {
   for (unsigned ip = 0; ip < procs; ++ip) {
     processes[ip].y.resize(bins);
   }
+
+  dy_work.resize(bins);
+  dnll_y_work.resize(bins);
 }
 
 // void Channel::AddLogNormal(unsigned proc, unsigned param, double kappa) {
@@ -114,13 +118,9 @@ void CMSNLL::Gradient(const double* x, double* grad) const {
   // DoEval(x);
   for (unsigned i = 0; i < NDim(); ++i) {
     grad[i] = dnll_[i];
+
   }
-  // const unsigned Ng = gaus_mean_.size();
-  // const unsigned Np = pois_obs_.size();
-  // for (unsigned i = 0; i < Ng; ++i) {
-  //   const double arg = x[i] - gaus_mean_[i];
-  //   grad[i] = -2. * gaus_scale_[i] * arg;
-  // }
+
   // for (unsigned i = 0; i < Np; ++i) {
   //   // const double arg = x[i] - gaus_mean_[i];
   //   grad[Ng + i] = -pois_obs_[i] / x[Ng + i] + 1.;
@@ -197,22 +197,41 @@ void CMSNLL::SetData(unsigned chn, std::vector<double> const& x) {
 
 
 void CMSNLL::AddRateParam(unsigned par, unsigned chn, std::vector<unsigned> procs) {
-  channels_.at(chn).rp_slot.emplace_back(par);
-  channels_.at(chn).dy_rp.emplace_back(channels_.at(chn).bins, 0.);
-  channels_.at(chn).dnll_y_rp.emplace_back(channels_.at(chn).bins, 0.);
-  channels_.at(chn).dnll_rp.emplace_back(0.);
-  unsigned slot = channels_.at(chn).dy_rp.size() - 1;
-  for (unsigned const& p : procs) {
-    channels_.at(chn).processes.at(p).rp.push_back(par);
-    channels_.at(chn).proc_cache.at(p).chn_slot.push_back(slot);
-
+  Channel & channel = channels_.at(chn);
+  channel.rp_slot.emplace_back(par);
+  channel.dnll_rp.emplace_back(0.);
+  // unsigned slot = channels_.at(chn).dy_rp.size() - 1;
+  std::vector<unsigned> proc_slots(procs.size(), 0);
+  for (unsigned ip = 0; ip < procs.size(); ++ip) {
+    Proc & proc = channel.processes.at(procs[ip]);
+    proc.rp.push_back(par);
+    proc_slots[ip] = proc.rp.size() - 1;
   }
+  channel.rp_procs.emplace_back(procs);
+  channel.rp_proc_slots.emplace_back(proc_slots);
+
+  // for (unsigned const& p : procs) {
+  //   // channels_.at(chn).processes.at(p).rp.push_back(par);
+  //   channels_.at(chn).proc_cache.at(p).chn_slot.push_back(slot);
+
+  // }
   // channels_[chn].rp_table.push_back(RateParam(par, procs)); // TODO: check if already exists
   // channels_[chn].dy_rp.push_back(std::vector<double>(channels_[chn].bins, 0.));
   // channels_[chn].dN_drp.push_back(std::vector<double>(procs.size(), 0.));
 }
 
-void CMSNLL::AddGaussianConstraint(double mean, double width) {
+void CMSNLL::AddLogNormal(unsigned par, unsigned chn, std::vector<unsigned> const& proc, std::vector<double> const& kappa) {
+  Channel & channel = channels_.at(chn);
+  channel.lnN_slot.push_back(par);
+  channel.lnN_procs.push_back(proc);
+  std::vector<double> logkappa(kappa.size(), 0.);
+  std::transform(kappa.begin(), kappa.end(), logkappa.begin(), [](double const& p) { return std::log(p); });
+  channel.lnN_logkappas.push_back(logkappa);
+}
+
+
+void CMSNLL::AddGaussianConstraint(unsigned par, double mean, double width) {
+  gaus_slot_.push_back(par);
   gaus_mean_.push_back(mean);
   gaus_scale_.push_back(-0.5 / (width * width));
 }
@@ -235,7 +254,8 @@ std::vector<ROOT::Fit::ParameterSettings> CMSNLL::GetParameters() const {
   std::vector<ROOT::Fit::ParameterSettings> res(NDim());
   for (unsigned i = 0; i < params_.size(); ++i) {
     // res[i].Set()
-    res[i].Set(params_[i].name, params_[i].value, 0.1, 0, 20.);
+    // res[i].Set(params_[i].name, params_[i].value, 1.);
+    res[i].Set(params_[i].name, params_[i].value, 2., -10, 20.);
   }
 
   return res;
@@ -248,6 +268,9 @@ void CMSNLL::SetParameter(unsigned par, double val) {
 
 double CMSNLL::evaluate(bool dograd) const {
   // double ret = 0;
+  for (unsigned i = 0; i < NDim(); ++i) {
+    std::cout << "PARAM " << params_[i].name << " = " << params_[i].value << "\n";
+  }
   nll_ = 0.;
   if (dograd) {
     dnll_.resize(params_.size());
@@ -261,15 +284,15 @@ double CMSNLL::evaluate(bool dograd) const {
     // Reset the nominal cache
     std::fill(chn.y.begin(), chn.y.end(), 0.);
     // Reset the rateParam derivative vectors
-    if (dograd) {
-      for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
-        std::fill(chn.dy_rp[ir].begin(), chn.dy_rp[ir].end(), 0.);
-      }
-    }
+    // if (dograd) {
+    //   std::fill(chn.dy_work.begin(), chn.dy_work.end(), 0.);
+    //   }
+    // }
     for (unsigned ip = 0; ip < chn.procs; ++ip) {
       Proc & proc = chn.processes[ip];
       ProcCache & pc = chn.proc_cache[ip];
       pc.N = chn.processes[ip].N0;
+      pc.k_tot = 0.; // reset the log-normal sum
       if (dograd) {
         pc.dN_rp.resize(proc.rp.size()); // Better in some init function
         pc.dN_rp_work.resize(proc.rp.size()); // Better in some init function
@@ -289,51 +312,96 @@ double CMSNLL::evaluate(bool dograd) const {
           }
         }
       }
-      if (dograd) {
-        for (unsigned ir = 0; ir < proc.rp.size(); ++ir) {
-          for (unsigned ib = 0; ib < chn.bins; ++ib) {
-            chn.dy_rp[pc.chn_slot[ir]][ib] += chn.processes[ip].y[ib] * pc.dN_rp[ir];
-          }
-        }
-      }
+      // if (dograd) {
+      //   for (unsigned ir = 0; ir < proc.rp.size(); ++ir) {
+      //     for (unsigned ib = 0; ib < chn.bins; ++ib) {
+      //       chn.dy_rp[pc.chn_slot[ir]][ib] += chn.processes[ip].y[ib] * pc.dN_rp[ir];
+      //     }
+      //   }
+      // }
       // std::fill(pc.dN_rp.begin(), pc.dN_rp.end(), 0.);
     }
 
+    for (unsigned ik = 0; ik < chn.lnN_slot.size(); ++ik) {
+      for (unsigned ip = 0; ip < chn.lnN_procs[ik].size(); ++ip) {
+        chn.proc_cache[chn.lnN_procs[ik][ip]].k_tot += val(chn.lnN_slot[ik]) * chn.lnN_logkappas[ik][ip];
+      }
+    }
+    
     for (unsigned ip = 0; ip < chn.procs; ++ip) {
+      chn.proc_cache[ip].N *= std::exp(chn.proc_cache[ip].k_tot);
       for (unsigned ib = 0; ib < chn.bins; ++ib) {
         chn.y[ib] += chn.processes[ip].y[ib] * chn.proc_cache[ip].N;
       }
-  //   for (unsigned is = 0; is < lnN_table_[ip].size(); ++is) {
-  //     unsigned idx = lnN_table_[ip][is].par;
-  //     double scale = std::pow(lnN_table_[ip][is].kappa, (*params_)[idx].value);
-  //     std::cout << ">> norm_cache[" << ip << "]: " << (*params_)[idx].name << "[x=" << (*params_)[idx].value << ",kappa=" << lnN_table_[ip][is].kappa << "], scale=" << scale << "\n";
-  //     norm_cache_[ip] *= scale;
-  //   }
-  //   // Here I have to update the process yield modifiers
-
-
     }
 
 
-    // std::vector<double> perbin_ll(chn.bins, 0.);
     for (unsigned ib = 0; ib < chn.bins; ++ib) {
         chn.nll_y[ib] = chn.data[ib] * (std::log(chn.y[ib]) - std::log(chn.data[ib])) - chn.y[ib] + chn.data[ib];
         // std::cout << chn.data[ib] << "\t" << chn.y[ib] << "\t" << chn.nll_y[ib] << "\n";
-        if (dograd) {
-          for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
-            chn.dnll_y_rp[ir][ib] = chn.data[ib] * (chn.dy_rp[ir][ib] / chn.y[ib]) - chn.dy_rp[ir][ib];
-          }
-        }
+        // if (dograd) {
+        //   for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
+        //     chn.dnll_y_rp[ir][ib] = chn.data[ib] * (chn.dy_rp[ir][ib] / chn.y[ib]) - chn.dy_rp[ir][ib];
+        //   }
+        // }
     }
     chn.nll = std::accumulate(chn.nll_y.begin(), chn.nll_y.end(), 0.);
     nll_ -= chn.nll;
+
     if (dograd) {
-      for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
-        chn.dnll_rp[ir] = std::accumulate(chn.dnll_y_rp[ir].begin(), chn.dnll_y_rp[ir].end(), 0.);
+      for (unsigned ir = 0; ir < chn.rp_slot.size(); ++ir) {
+        std::fill(chn.dy_work.begin(), chn.dy_work.end(), 0.);
+        std::fill(chn.dnll_y_work.begin(), chn.dnll_y_work.end(), 0.);
+        for (unsigned ip = 0; ip < chn.rp_procs[ir].size(); ++ ip) {
+          double const& dN_rp = chn.proc_cache[chn.rp_procs[ir][ip]].dN_rp[chn.rp_proc_slots[ir][ip]];
+          for (unsigned ib = 0; ib < chn.bins; ++ib) {
+            chn.dy_work[ib] += chn.processes[chn.rp_procs[ir][ip]].y[ib] * dN_rp;
+          }
+        }
+        for (unsigned ib = 0; ib < chn.bins; ++ib) {
+          chn.dnll_y_work[ib] = chn.data[ib] * (chn.dy_work[ib] / chn.y[ib]) - chn.dy_work[ib];
+        }
+        chn.dnll_rp[ir] = std::accumulate(chn.dnll_y_work.begin(), chn.dnll_y_work.end(), 0.);
         dnll_[chn.rp_slot[ir]] -= chn.dnll_rp[ir];
       }
+
+      for (unsigned ik = 0; ik < chn.lnN_slot.size(); ++ik) {
+        std::fill(chn.dy_work.begin(), chn.dy_work.end(), 0.);
+        std::fill(chn.dnll_y_work.begin(), chn.dnll_y_work.end(), 0.);
+        for (unsigned ip = 0; ip < chn.lnN_procs[ik].size(); ++ip) {
+          double dN_k = chn.proc_cache[chn.lnN_procs[ik][ip]].N * chn.lnN_logkappas[ik][ip];
+          for (unsigned ib = 0; ib < chn.bins; ++ib) {
+            chn.dy_work[ib] += chn.processes[chn.lnN_procs[ik][ip]].y[ib] * dN_k;
+          }
+        }
+        for (unsigned ib = 0; ib < chn.bins; ++ib) {
+          chn.dnll_y_work[ib] = chn.data[ib] * (chn.dy_work[ib] / chn.y[ib]) - chn.dy_work[ib];
+        }
+        // chn.dnll_rp[ir] = std::accumulate(chn.dnll_y_work.begin(), chn.dnll_y_work.end(), 0.);
+        dnll_[chn.lnN_slot[ik]] -= std::accumulate(chn.dnll_y_work.begin(), chn.dnll_y_work.end(), 0.);
+      }
     }
+    // if (dograd) {
+    //   for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
+    //     chn.dnll_rp[ir] = std::accumulate(chn.dnll_y_rp[ir].begin(), chn.dnll_y_rp[ir].end(), 0.);
+    //     dnll_[chn.rp_slot[ir]] -= chn.dnll_rp[ir];
+    //   }
+    // }
   } // channels
+  
+  // Do constraint part
+  for (unsigned i = 0; i < gaus_mean_.size(); ++i) {
+    const double arg = val(gaus_slot_[i]) - gaus_mean_[i];
+    nll_ -= gaus_scale_[i] * arg * arg;
+    // grad[i] = -2. * gaus_scale_[i] * arg;
+  }
+  if (dograd) {
+    for (unsigned i = 0; i < gaus_mean_.size(); ++i) {
+      const double arg = val(gaus_slot_[i]) - gaus_mean_[i];
+      dnll_[gaus_slot_[i]] -= 2. * gaus_scale_[i] * arg;
+    }
+  }
+  // this->PrintModel();
   return 0.;
 }
 
@@ -342,7 +410,7 @@ double CMSNLL::evaluate(bool dograd) const {
     std::cout << ">> Set offset to " << zero_point_ << "\n";
   }
 
-void CMSNLL::PrintModel() {
+void CMSNLL::PrintModel() const {
   auto const& Fmt = TString::Format;
   for (unsigned ic = 0; ic < channels_.size(); ++ic) {
     Channel const& chn = channels_[ic];
@@ -353,16 +421,15 @@ void CMSNLL::PrintModel() {
       std::cout << Fmt("%5i", ip) << " | " << FmtVec(chn.processes[ip].y, "%5.1f") << " | " << Fmt("N = [%5.1f]", chn.processes[ip].N0);
       std::cout << " rp = " << FmtVec(chn.processes[ip].rp, "%2i");
       std::cout << " dN_rp = " << FmtVec(chn.proc_cache[ip].dN_rp, "%5.2f");
-      std::cout << " chn_slot = " << FmtVec(chn.proc_cache[ip].chn_slot, "%2i");
+      // std::cout << " chn_slot = " << FmtVec(chn.proc_cache[ip].chn_slot, "%2i");
       std::cout << std::endl;
     }
     std::cout << Fmt("%5s", "y") << " | " << FmtVec(chn.y, "%5.1f") << std::endl;
     std::cout << "nll_y | " << FmtVec(chn.nll_y, "%5.1f") << " | " << Fmt("nll = [%5.2f]", chn.nll) << std::endl;
-    for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
-      std::cout << Fmt("%10s", "dy_rp") << "[" << ir << "] | " << FmtVec(chn.dy_rp[ir], "%5.1f") << std::endl;
-      std::cout << Fmt("%10s", "dnll_y_rp") << "[" << ir << "] | " << FmtVec(chn.dnll_y_rp[ir], "%5.1f") << " | " << Fmt("dnll_rp = [%5.2f]", chn.dnll_rp[ir]) << Fmt(", rp_slot = [%i]", chn.rp_slot[ir]) << std::endl;
+    for (unsigned ir = 0; ir < chn.rp_slot.size(); ++ir) {
+      // std::cout << Fmt("%10s", "dy_rp") << "[" << ir << "] | " << FmtVec(chn.dy_rp[ir], "%5.1f") << std::endl;
+      std::cout << Fmt("dnll_rp = [%5.2f]", chn.dnll_rp[ir]) << Fmt(", rp_slot = [%i]", chn.rp_slot[ir]) << std::endl;
     }
-
   }
   std::cout << ">> Totals:" << std::endl;
   std::cout << Fmt("nll = [%7.3f]", nll_) << std::endl;
