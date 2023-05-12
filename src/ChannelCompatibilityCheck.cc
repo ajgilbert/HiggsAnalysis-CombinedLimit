@@ -1,4 +1,4 @@
-#include "HiggsAnalysis/CombinedLimit/interface/ChannelCompatibilityCheck.h"
+#include "../interface/ChannelCompatibilityCheck.h"
 #include <TFile.h>
 #include <RooRealVar.h>
 #include <RooArgSet.h>
@@ -8,12 +8,12 @@
 #include <RooCustomizer.h>
 #include <RooSimultaneous.h>
 #include <RooStats/ModelConfig.h>
-#include "HiggsAnalysis/CombinedLimit/interface/Combine.h"
-#include "HiggsAnalysis/CombinedLimit/interface/Significance.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CloseCoutSentry.h"
-#include "HiggsAnalysis/CombinedLimit/interface/RooSimultaneousOpt.h"
-#include "HiggsAnalysis/CombinedLimit/interface/utils.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CachingNLL.h"
+#include "../interface/Combine.h"
+#include "../interface/Significance.h"
+#include "../interface/CloseCoutSentry.h"
+#include "../interface/RooSimultaneousOpt.h"
+#include "../interface/utils.h"
+#include "../interface/CachingNLL.h"
 
 
 #include <Math/MinimizerOptions.h>
@@ -113,7 +113,9 @@ bool ChannelCompatibilityCheck::runSpecific(RooWorkspace *w, RooStats::ModelConf
   }
   for (std::map<std::string,std::string>::const_iterator it = rs.begin(), ed = rs.end(); it != ed; ++it) {
       RooRealVar *ri = (RooRealVar*) result_freeform->floatParsFinal().find(it->second.c_str());
-      if (runMinos_ && do95_) {
+      if (ri == NULL){
+      printf("Parameter %s not found in channel %s. Does this region contain signal templates?\n", r->GetName(), it->first.c_str());
+      } else if (runMinos_ && do95_) {
 	  printf("Alternate fit: %s = %7.4f  %+6.4f/%+6.4f (68%% CL) in channel %s\n", r->GetName(), ri->getVal(), ri->getAsymErrorLo(), ri->getAsymErrorHi(), it->first.c_str());
 	  printf("               %s = %7.4f  %+6.4f/%+6.4f (95%% CL) in channel %s\n", r->GetName(), ri->getVal(), ri->getMin("err95")-ri->getVal(), ri->getMax("err95")-ri->getVal(), it->first.c_str());
       } else if (runMinos_) {

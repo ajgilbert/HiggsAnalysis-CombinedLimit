@@ -1,7 +1,7 @@
 /**************************************
   Simple multiChannel significance & limit calculator
 ***************************************/
-#include "HiggsAnalysis/CombinedLimit/interface/Combine.h"
+#include "../interface/Combine.h"
 #include <cstring>
 #include <cerrno>
 #include <iostream>
@@ -53,19 +53,19 @@
 #include <boost/algorithm/string.hpp> 
 #include <regex>
 
-#include "HiggsAnalysis/CombinedLimit/interface/LimitAlgo.h"
-#include "HiggsAnalysis/CombinedLimit/interface/utils.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CloseCoutSentry.h"
-#include "HiggsAnalysis/CombinedLimit/interface/RooSimultaneousOpt.h"
-#include "HiggsAnalysis/CombinedLimit/interface/ToyMCSamplerOpt.h"
-#include "HiggsAnalysis/CombinedLimit/interface/AsimovUtils.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CascadeMinimizer.h"
-#include "HiggsAnalysis/CombinedLimit/interface/ProfilingTools.h"
-#include "HiggsAnalysis/CombinedLimit/interface/RooMultiPdf.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CMSHistFunc.h"
-#include "HiggsAnalysis/CombinedLimit/interface/CMSHistSum.h"
+#include "../interface/LimitAlgo.h"
+#include "../interface/utils.h"
+#include "../interface/CloseCoutSentry.h"
+#include "../interface/RooSimultaneousOpt.h"
+#include "../interface/ToyMCSamplerOpt.h"
+#include "../interface/AsimovUtils.h"
+#include "../interface/CascadeMinimizer.h"
+#include "../interface/ProfilingTools.h"
+#include "../interface/RooMultiPdf.h"
+#include "../interface/CMSHistFunc.h"
+#include "../interface/CMSHistSum.h"
 
-#include "HiggsAnalysis/CombinedLimit/interface/Logger.h"
+#include "../interface/Logger.h"
 
 using namespace RooStats;
 using namespace RooFit;
@@ -272,7 +272,8 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
     // nothing to do
   } else {
     TString txtFile = fileToLoad.Data();
-    TString options = TString::Format(" -m %f -D %s", mass_, dataset.c_str());
+    //TString options = TString::Format(" -m %f -D %s", mass_, dataset.c_str());
+    TString options = TString::Format(" -m %f", mass_);
     //if (!withSystematics) options += " --stat ";
     if (compiledExpr_)    options += " --compiled ";
     if (verbose > 1)      options += TString::Format(" --verbose %d", verbose-1);
@@ -341,7 +342,7 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
     if (POI->getSize() > 1) std::cerr << "ModelConfig '" << modelConfigName_ << "' defines more than one parameter of interest. This is not supported in some statistical methods." << std::endl;
     if (mc->GetObservables() == 0) throw std::invalid_argument("ModelConfig '"+modelConfigName_+"' does not define observables.");
     if (mc->GetPdf() == 0) throw std::invalid_argument("ModelConfig '"+modelConfigName_+"' does not define a pdf.");
-    if (auto pdf = dynamic_cast<RooSimultaneous*>(mc->GetPdf()); pdf!=nullptr) {
+    if (auto pdf = dynamic_cast<RooSimultaneous*>(mc->GetPdf()); pdf!=nullptr && dynamic_cast<RooSimultaneousOpt*>(pdf)==nullptr) {
       if (rebuildSimPdf_) {
           pdf = utils::rebuildSimPdf(*mc->GetObservables(), pdf);
           w->import(*pdf);
@@ -955,7 +956,7 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
             utils::setAllConstant(*mc->GetParametersOfInterest(), false);
             w->saveSnapshot("clean", utils::returnAllVars(w));
         } else {
-            toymcoptutils::SimPdfGenInfo newToyMC(*genPdf, *observables, !unbinned_); 
+            toymcoptutils::SimPdfGenInfo newToyMC(*genPdf, *observables, !unbinned_);
 
 	    // print the values of the parameters used to generate the toy
 	    if (verbose > 2) {
@@ -998,7 +999,7 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
   std::unique_ptr<RooAbsPdf> nuisancePdf;
   if (nToys > 0) {
     if (genPdf == 0) throw std::invalid_argument("You can't generate background-only toys if you have no background-only pdf in the workspace and you have set --noMCbonly");
-    toymcoptutils::SimPdfGenInfo newToyMC(*genPdf, *observables, !unbinned_); 
+    toymcoptutils::SimPdfGenInfo newToyMC(*genPdf, *observables, !unbinned_, NULL, 0, toysFrequentist_); 
     double expLimit = 0;
     unsigned int nLimits = 0;
     w->loadSnapshot("clean");
