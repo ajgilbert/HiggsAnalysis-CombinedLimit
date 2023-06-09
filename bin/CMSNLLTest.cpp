@@ -1,9 +1,14 @@
 #include <Fit/Fitter.h>
 #include <TString.h>
+#include <cstdlib>
 #include <iostream>
+#include <vector>
 #include <Math/MinimizerOptions.h>
 #include <Minuit2/MnPrint.h>
 #include <Math/IOptions.h>
+#include "../interface/CombineHarvester.h"
+#include "../interface/Process.h"
+#include "../interface/Utilities.h"
 #include "TRandom3.h"
 #include <TStopwatch.h>
 #include "TH1F.h"
@@ -13,7 +18,18 @@
 #include "../interface/CMSNLLTest.h"
 #include "../interface/json.hpp"
 
+#include "Minuit2/Minuit2Minimizer.h"
+#include "Math/Factory.h"
+
 using json = nlohmann::json;
+
+std::vector<double> BinVec(TH1 & h) {
+  std::vector<double> res(h.GetNbinsX());
+  for (int i = 1; i < h.GetNbinsX() + 1; ++i) {
+    res[i - 1] = h.GetBinContent(i);
+  }
+  return res;
+}
 
 void TestAnalyticGrad() {
   auto func = ROOT::Math::Functor1D([](double x) { return x * x; });
@@ -42,9 +58,70 @@ int main(int argc, char* argv[]) {
 
   TRandom3 rng;
 
+  ch::CombineHarvester cmb;
 
   bool bigmodel = js.at("bigmodel");
-  if (bigmodel) {
+  std::string readcard = "";
+  if (js.count("card")) {
+    readcard = js.at("card");
+    cmb.ParseDatacard(readcard, "");
+    cmb.PrintAll();
+    nllf.AddParameter("r", 1., 0.1, 0., 10.);
+
+    std::set<std::string> added_systs;
+    for (auto const& b : cmb.bin_set()) {
+      TH1F h = cmb.cp().bin({b}).GetObservedShape();
+      std::cout << h.GetNbinsX() << "\n";
+      h.Print("range");
+      if (h.GetNbinsX() == 1) {
+        // This is a counting card
+        h = TH1F("obs", "", 1, 0, 1);
+        h.SetBinContent(1, cmb.cp().bin({b}).GetObservedRate());
+      }
+      h.Print("range");
+      std::vector<ch::Process *> procs;
+      cmb.cp().bin({b}).ForEachProc([&](ch::Process *p) {
+        procs.push_back(p);
+      });
+
+      std::map<std::string, std::pair<std::vector<unsigned >, std::vector<double>>> syst_vals;
+      std::vector<unsigned> sig_procs;
+      // auto procs = ch::Set2Vec(cmb.cp().bin({b}).process_set());
+      unsigned ic = nllf.AddChannel(h.GetNbinsX(), procs.size());
+      nllf.SetData(ic, BinVec(h));
+      for (unsigned ip = 0; ip < procs.size(); ++ip) {
+        // std::vector<double> vals;
+        auto phist = procs[ip]->ClonedScaledShape();
+        if (phist.get() == nullptr) {
+          phist = std::make_unique<TH1F>("proc", "", 1, 0, 1);
+          phist->SetBinContent(1, procs[ip]->no_norm_rate());
+        }
+        nllf.SetTemplate(ic, ip, BinVec(*phist));
+        if (procs[ip]->signal()) {
+          sig_procs.push_back(ip);
+        }
+        cmb.cp().bin({b}).process({procs[ip]->process()}).ForEachSyst([&](ch::Systematic *s) {
+          if (s->type() == "lnN" && s->asymm() == false) {
+            std::cout << s->name() << "\t" << s->value_u() << "\n";
+            if (added_systs.count(s->name()) == 0) {
+              nllf.AddParameter(s->name(), 0., 0.5, -7., 7.);
+              nllf.AddGaussianConstraint(nllf.par(s->name()), 0., 1.);
+              added_systs.insert(s->name());
+            }
+            syst_vals[s->name()].first.push_back(ip);
+            syst_vals[s->name()].second.push_back(s->value_u());
+          }
+        });
+      }
+      nllf.AddRateParam(nllf.par("r"), ic, sig_procs);
+      for (auto const& s : syst_vals) {
+        nllf.AddLogNormal(nllf.par(s.first), ic, s.second.first, s.second.second);
+      }
+    }
+    nllf.evaluate(true);
+    nllf.PrintModel();
+    // std::exit(0);
+  } else if (bigmodel) {
     unsigned n_bins = 2000;
     unsigned n_sig = 50;
     std::vector<double> bkg(n_bins);
@@ -74,7 +151,7 @@ int main(int argc, char* argv[]) {
     for (unsigned is = 0; is < n_sig; ++is) {
       nllf.SetTemplate(ic, is + 1, sig[is]);
       std::string name(TString::Format("r%i", is).Data());
-      nllf.AddParameter(name, 1.);
+      nllf.AddParameter(name, 1., 1., -10., 10.);
       nllf.AddRateParam(nllf.par(name), 0, {is + 1});
     }
     nllf.SetData(ic, data);
@@ -98,11 +175,11 @@ int main(int argc, char* argv[]) {
     nllf.SetTemplate(ic, 0, {45.});
     nllf.SetTemplate(ic, 1, {55.});
     nllf.SetData(ic, {80.});
-    nllf.AddParameter("scale", 0.);
+    nllf.AddParameter("scale", 0., 1., -7., 7.);
     nllf.AddGaussianConstraint(nllf.par("scale"), 0., 1.);
     nllf.AddLogNormal(nllf.par("scale"), 0, {0}, {1.5});
 
-    nllf.AddParameter("scale2", 0.);
+    nllf.AddParameter("scale2", 0., 1., -7., 7.);
     nllf.AddGaussianConstraint(nllf.par("scale2"), 0., 1.);
     nllf.AddLogNormal(nllf.par("scale2"), 0, {0, 1}, {1.1, 1.4});
 
@@ -110,6 +187,7 @@ int main(int argc, char* argv[]) {
     // nllf.AddRateParam(nllf.par("r"), 0, {1});
     nllf.evaluate(true);
     nllf.PrintModel();
+    exit(0);
 
   }
 
@@ -152,15 +230,30 @@ int main(int argc, char* argv[]) {
   auto& extra_opts = ROOT::Math::MinimizerOptions::Default("Minuit2");
   extra_opts.SetValue("StorageLevel", 0);
   opts.SetErrorDef(0.5);
-  opts.SetPrintLevel(10);
-  opts.SetStrategy(0);
-  // opts.SetTolerance(0.1);
+  opts.SetPrintLevel(js.at("printLevel"));
+  opts.SetStrategy(js.at("strategy"));
+  opts.SetTolerance(js.at("tol"));
+
   TStopwatch tw;
   tw.Start();
+  // std::cout << fitter.GetMinimizer() << "\n";
+  // fitter.CalculateHessErrors();
   fitter.FitFCN();
+  // fitter.CalculateHessErrors();
+  // fitter.FitFCN();
+  // ROOT::Minuit2::Minuit2Minimizer *minim = dynamic_cast<ROOT::Minuit2::Minuit2Minimizer*>(fitter.GetMinimizer());
+  // minim->Minimize();
+  // fitter.SetFCN((ROOT::Math::IMultiGenFunction&)nllf);
+  
+  // minim->
+  // minim->Hesse();
+
+  // fitter.FitFCN();
   // fitter.CalculateMinosErrors();
   tw.Stop();
+  fitter.Result().Print(std::cout);
   std::cout << ">> Fit in " << tw.RealTime() << std::endl;
+  // nllf.PrintModel();
   // fitter.CalculateHessErrors();
 
   return 0;

@@ -57,11 +57,11 @@ Channel::Channel(unsigned b, unsigned p) : bins(b), procs(p) {
 
 ROOT::Math::IMultiGradFunction* CMSNLL::Clone() const { return new CMSNLL(*this); }
 
-void CMSNLL::AddParameter(std::string const& name, double val) {
+void CMSNLL::AddParameter(std::string const& name, double val, double step, double lo, double hi) {
   if (param_lookup_.count(name)) {
     std::cout << "Error, parameter " << name << " already exists\n";
   } else {
-    params_.push_back(Parameter(name, val));
+    params_.push_back(Parameter(name, val, step, lo, hi));
     param_lookup_[name] = params_.size() - 1;
   }
 }
@@ -255,7 +255,7 @@ std::vector<ROOT::Fit::ParameterSettings> CMSNLL::GetParameters() const {
   for (unsigned i = 0; i < params_.size(); ++i) {
     // res[i].Set()
     // res[i].Set(params_[i].name, params_[i].value, 1.);
-    res[i].Set(params_[i].name, params_[i].value, 2., -10, 20.);
+    res[i].Set(params_[i].name, params_[i].value, params_[i].err, params_[i].lo, params_[i].hi);
   }
 
   return res;
@@ -268,9 +268,9 @@ void CMSNLL::SetParameter(unsigned par, double val) {
 
 double CMSNLL::evaluate(bool dograd) const {
   // double ret = 0;
-  for (unsigned i = 0; i < NDim(); ++i) {
-    std::cout << "PARAM " << params_[i].name << " = " << params_[i].value << "\n";
-  }
+  // for (unsigned i = 0; i < NDim(); ++i) {
+  //   std::cout << "PARAM " << params_[i].name << " = " << params_[i].value << "\n";
+  // }
   nll_ = 0.;
   if (dograd) {
     dnll_.resize(params_.size());
@@ -301,6 +301,9 @@ double CMSNLL::evaluate(bool dograd) const {
       for (unsigned ir = 0; ir < proc.rp.size(); ++ir) {
         // Update the nominal
         double v = val(proc.rp[ir]);
+        if (v != v) {
+          std::cout << "HAVE NAN value in val " << proc.rp[ir] << "\n";
+        }
         pc.N *= v;
   
         // Update the derivatives
@@ -329,7 +332,15 @@ double CMSNLL::evaluate(bool dograd) const {
     }
     
     for (unsigned ip = 0; ip < chn.procs; ++ip) {
-      chn.proc_cache[ip].N *= std::exp(chn.proc_cache[ip].k_tot);
+      // This is important, we need to propagate the kappa effect to the 
+      // partial derivatives dN_rp
+      double exp_k_tot = std::exp(chn.proc_cache[ip].k_tot);
+      chn.proc_cache[ip].N *= exp_k_tot;
+      if (dograd) {
+        for (unsigned ir2 = 0; ir2 < chn.proc_cache[ip].dN_rp.size(); ++ir2) {
+          chn.proc_cache[ip].dN_rp[ir2] *= exp_k_tot;
+        }
+      }
       for (unsigned ib = 0; ib < chn.bins; ++ib) {
         chn.y[ib] += chn.processes[ip].y[ib] * chn.proc_cache[ip].N;
       }
@@ -337,7 +348,7 @@ double CMSNLL::evaluate(bool dograd) const {
 
 
     for (unsigned ib = 0; ib < chn.bins; ++ib) {
-        chn.nll_y[ib] = chn.data[ib] * (std::log(chn.y[ib]) - std::log(chn.data[ib])) - chn.y[ib] + chn.data[ib];
+        chn.nll_y[ib] = chn.data[ib] * (std::log(chn.y[ib]) - std::log(chn.data[ib] + 1.)) - chn.y[ib] + chn.data[ib];
         // std::cout << chn.data[ib] << "\t" << chn.y[ib] << "\t" << chn.nll_y[ib] << "\n";
         // if (dograd) {
         //   for (unsigned ir = 0; ir < chn.dy_rp.size(); ++ir) {
@@ -415,14 +426,20 @@ void CMSNLL::PrintModel() const {
   for (unsigned ic = 0; ic < channels_.size(); ++ic) {
     Channel const& chn = channels_[ic];
     std::cout << ">> Channel " << ic << std::endl;
-    std::cout << Fmt("%5s", "Data") << " | " << FmtVec(chn.data, "%5.1f") << std::endl;
+    std::cout << Fmt("%5s", "Data") << " | " << FmtVec(chn.data, "%5.3f") << std::endl;
 
     for (unsigned ip = 0; ip < chn.procs; ++ip) {
-      std::cout << Fmt("%5i", ip) << " | " << FmtVec(chn.processes[ip].y, "%5.1f") << " | " << Fmt("N = [%5.1f]", chn.processes[ip].N0);
+      std::cout << Fmt("%5i", ip) << " | " << FmtVec(chn.processes[ip].y, "%5.1f") << " | " << Fmt("N0 = [%5.1f]", chn.processes[ip].N0) << Fmt("N = [%5.1f]", chn.proc_cache[ip].N);
       std::cout << " rp = " << FmtVec(chn.processes[ip].rp, "%2i");
       std::cout << " dN_rp = " << FmtVec(chn.proc_cache[ip].dN_rp, "%5.2f");
+      std::cout << Fmt(" k_tot = [%7.3f]", chn.proc_cache[ip].k_tot);
       // std::cout << " chn_slot = " << FmtVec(chn.proc_cache[ip].chn_slot, "%2i");
       std::cout << std::endl;
+    }
+    for (unsigned il = 0; il < chn.lnN_slot.size(); ++il) {
+      std::cout << "lnN_slot[" << il << "] = " << params_[chn.lnN_slot[il]].name << "\n";
+      std::cout << "lnN_procs[" << il << "] = " << FmtVec(chn.lnN_procs[il], "%5.1i") << "\n";
+      std::cout << "lnN_logkappas[" << il << "] = " << FmtVec(chn.lnN_logkappas[il], "%5.1f") << "\n";
     }
     std::cout << Fmt("%5s", "y") << " | " << FmtVec(chn.y, "%5.1f") << std::endl;
     std::cout << "nll_y | " << FmtVec(chn.nll_y, "%5.1f") << " | " << Fmt("nll = [%5.2f]", chn.nll) << std::endl;

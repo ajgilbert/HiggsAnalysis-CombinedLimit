@@ -18,7 +18,11 @@ void CheckGrad(ROOT::Math::RichardsonDerivator& d,
 struct Parameter {
   std::string name;
   double value;
-  Parameter(std::string n, double v) : name(n), value(v) {}
+  double err = 0.;
+  double lo = 0.;
+  double hi = 0.;
+  Parameter(std::string n, double v, double step) : name(n), value(v), err(step) {}
+  Parameter(std::string n, double v, double step, double lo, double hi) : name(n), value(v), err(step), lo(lo), hi(hi) {}
 };
 
 struct KappaValue {
@@ -123,7 +127,7 @@ public:
   void Gradient(const double* x, double* grad) const override;
   // void FdF(const double* x, double& f, double* df) const override;
 
-  void AddParameter(std::string const& name, double val);
+  void AddParameter(std::string const& name, double val, double step, double lo, double hi);
   double const& val(unsigned const& idx) const;
   double const& val(std::string const& name) const;
   unsigned par(std::string const& name) const;
