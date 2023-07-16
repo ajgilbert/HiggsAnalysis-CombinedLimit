@@ -3,6 +3,7 @@
 
 #include <sstream>
 #include <vector>
+#include "CombineHarvester/CombineTools/interface/Process.h"
 #include "TString.h"
 #include "Math/Functor.h"
 #include "Math/RichardsonDerivator.h"
@@ -22,7 +23,8 @@ struct Parameter {
   double lo = 0.;
   double hi = 0.;
   Parameter(std::string n, double v, double step) : name(n), value(v), err(step) {}
-  Parameter(std::string n, double v, double step, double lo, double hi) : name(n), value(v), err(step), lo(lo), hi(hi) {}
+  Parameter(std::string n, double v, double step, double lo, double hi)
+      : name(n), value(v), err(step), lo(lo), hi(hi) {}
 };
 
 struct KappaValue {
@@ -56,21 +58,21 @@ struct Channel {
   // The fixed model data
   unsigned bins = 0;
   unsigned procs = 0;
-  std::vector<double> data; // [bins]
-  std::vector<Proc> processes; // [procs]
-  std::vector<ProcCache> proc_cache; // [procs]
+  std::vector<double> data;           // [bins]
+  std::vector<Proc> processes;        // [procs]
+  std::vector<ProcCache> proc_cache;  // [procs]
   // std::vector<std::vector<double>> templates; // [procs][bins]
   // std::vector<double> N0; // [procs]
   // std::vector<RateParam> rp_table;
 
   // Intermediate parts of the calculation
-  std::vector<double> y; // [bins]
-  std::vector<double> nll_y; // [bins]
+  std::vector<double> y;      // [bins]
+  std::vector<double> nll_y;  // [bins]
 
   std::vector<double> dy_work;
   std::vector<double> dnll_y_work;
 
-  std::vector<unsigned>  rp_slot; // Where to send the rateParam NLL derivatives [rp]
+  std::vector<unsigned> rp_slot;  // Where to send the rateParam NLL derivatives [rp]
   std::vector<std::vector<unsigned>> rp_procs;
   std::vector<std::vector<unsigned>> rp_proc_slots;
 
@@ -81,8 +83,7 @@ struct Channel {
   // std::vector<std::vector<double>> dy_rp; // [rp][bins]
   // std::vector<std::vector<double>> dnll_y_rp; // [rp][bins]
   double nll;
-  std::vector<double> dnll_rp; // [rp]
-
+  std::vector<double> dnll_rp;  // [rp]
 
   Channel(unsigned b, unsigned p);
   // void AddLogNormal(unsigned proc, unsigned param, double kappa);
@@ -92,7 +93,6 @@ struct Channel {
   // std::vector<double> const& nominal();
 
   // std::vector<std::vector<double>> grad();
-
 };
 
 class CMSNLL : public ROOT::Math::IMultiGradFunction {
@@ -110,15 +110,14 @@ private:
   void CheckChanges(const double* x) const;
   double zero_point_ = 0.;
 
-  mutable double nll_; // The cached NLL value
-  mutable std::vector<double> dnll_; // The cached derivatives [N params]
-
+  mutable double nll_;                // The cached NLL value
+  mutable std::vector<double> dnll_;  // The cached derivatives [N params]
 
 public:
   int debug = 0;
   CMSNLL(){};
   ~CMSNLL() override{};
-  template<class T>
+  template <class T>
   std::string FmtVec(std::vector<T> vec, std::string fmt) const;
   ROOT::Math::IMultiGradFunction* Clone() const override;
   double DoEval(const double* x) const override;
@@ -154,18 +153,110 @@ public:
   std::vector<ROOT::Fit::ParameterSettings> GetParameters() const;
 };
 
+template <class T>
+std::string CMSNLL::FmtVec(std::vector<T> vec, std::string fmt) const {
+  std::stringstream ss;
+  ss << "[";
+  for (unsigned i = 0; i < vec.size(); ++i) {
+    ss << " " << TString::Format(fmt.c_str(), vec[i]);
+    if (i < vec.size() - 1)
+      ss << ",";
+  }
+  ss << "]";
+  return ss.str();
+}
 
-  template<class T>
-  std::string CMSNLL::FmtVec(std::vector<T> vec, std::string fmt) const {
-    std::stringstream ss;
-    ss << "[";
-    for (unsigned i = 0; i < vec.size(); ++i) {
-      ss << " " << TString::Format(fmt.c_str(), vec[i]);
-      if (i < vec.size() - 1) ss << ",";
+class ProcessNorms {
+private:
+  // Separate into invariant data and cache parts:
+  // Invariant data
+
+  struct RateParamData {
+    std::vector<unsigned> processIndex;
+  };
+
+  struct ProcToRateParam {
+    std::vector<unsigned> rateParamIndex;
+  };
+
+  struct LogNormalData {
+    unsigned processIndex;
+    double logKappa;
+  };
+
+  
+  struct AsymmLogNormalData {
+    std::vector<unsigned> processIndex;
+    std::vector<double> logKappaHi;
+    std::vector<double> logKappaLo;
+  };
+
+  struct AsymmLogNormalCache {
+
+    std::vector<double> avg;
+    std::vector<double> halfdiff;
+    std::vector<double> result;
+  };
+
+  void logKappaForX(double x, AsymmLogNormalData const& dat, AsymmLogNormalCache &cache) {
+    unsigned const Np = dat.processIndex.size();
+    if (fabs(x) >= 0.5) {
+      if (x >= 0) {
+        for (unsigned i = 0; i < Np; ++i) {
+          cache.result = dat.logKappaHi;
+        }
+      } else {
+        for (unsigned i = 0; i < Np; ++i) {
+          cache.result = -dat.logKappaLo;
+        }
+      }
+      return;
     }
-    ss << "]";
-    return ss.str();
+    
+
   }
 
+  std::vector<double> N0_;
+  std::vector<RateParamData> rateParamData_;
+  std::vector<LogNormalData> logNormalData_;
+  std::vector<AsymmLogNormalData> asymmLogNormalData_;
+
+
+  // This can be generated on the fly, no need to persist
+  std::vector<ProcToRateParam> procToRateParamLookup_; // inverse lookup to go from procs to rateParams
+  
+  std::vector<double> N_; // This is a cached value
+  std::vector<double> rateParamValues_;
+  std::vector<double> logNormalValues_;
+  std::vector<double> asymmLogNormalValues_;
+
+  
+public:
+  ProcessNorms() {};
+
+  void update(std::vector<double> const& params); // sets new parameter values, nothing else
+  void sync(); // make N vector up to date, following modes below. mark cache as clean
+  /*
+  Update modes:
+   - FullEval (redo complete evaluation)
+   - Memoization (only update pieces that changed) <- should be default?
+   - DiffOnly (apply diffs to all the pieces we can)
+
+  Implications:
+   - Need to track when caches are in sync or not with current parameter values
+   - Need to store "current" parameter values somewhere
+  */
+  inline std::vector<double> const& Norms() const { return N_; }
+  void Grad(unsigned i, std::vector<double> &result); // imply call to sync first
+  void Hessian(unsigned i, unsigned j, std::vector<double> &result); // imply call to sync first
+
+};
+
+class NLLChannel {
+  private:
+  std::vector<double> data;
+  ProcessNorms norms;
+  std::vector<double> shapes;
+};
 
 #endif
