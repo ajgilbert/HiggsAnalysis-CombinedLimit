@@ -1,9 +1,10 @@
 #ifndef HiggsAnalysis_CombinedLimit_CMSNLLTest
 #define HiggsAnalysis_CombinedLimit_CMSNLLTest
 
+#include <algorithm>
 #include <sstream>
 #include <vector>
-#include "CombineHarvester/CombineTools/interface/Process.h"
+#include "../interface/Process.h"
 #include "TString.h"
 #include "Math/Functor.h"
 #include "Math/RichardsonDerivator.h"
@@ -171,7 +172,7 @@ private:
   // Separate into invariant data and cache parts:
   // Invariant data
 
-  struct RateParamData {
+  struct RateParam {
     std::vector<unsigned> processIndex;
   };
 
@@ -179,16 +180,15 @@ private:
     std::vector<unsigned> rateParamIndex;
   };
 
-  struct LogNormalData {
-    unsigned processIndex;
-    double logKappa;
-  };
 
-  
-  struct AsymmLogNormalData {
+  struct LogNormal {
     std::vector<unsigned> processIndex;
+    std::vector<double> logKappa;
+
+    std::vector<unsigned> asymmProcessIndex;
     std::vector<double> logKappaHi;
     std::vector<double> logKappaLo;
+  
   };
 
   struct AsymmLogNormalCache {
@@ -196,45 +196,64 @@ private:
     std::vector<double> avg;
     std::vector<double> halfdiff;
     std::vector<double> result;
+
+    void resize(unsigned n) {
+      avg.resize(n);
+      halfdiff.resize(n);
+      result.resize(n);
+    }
+
+    unsigned size() const {
+      return result.size();
+    }
   };
 
-  void logKappaForX(double x, AsymmLogNormalData const& dat, AsymmLogNormalCache &cache) {
-    unsigned const Np = dat.processIndex.size();
+  void logKappaForX(double x, LogNormal const& dat, AsymmLogNormalCache &cache) {
+    unsigned const Np = dat.asymmProcessIndex.size();
     if (fabs(x) >= 0.5) {
       if (x >= 0) {
         for (unsigned i = 0; i < Np; ++i) {
-          cache.result = dat.logKappaHi;
+          cache.result[i] = dat.logKappaHi[i];
         }
       } else {
         for (unsigned i = 0; i < Np; ++i) {
-          cache.result = -dat.logKappaLo;
+          cache.result[i] = -dat.logKappaLo[i];
         }
       }
       return;
+    } else {
+      double twox = x + x;
+      double twox2 = twox * twox;
+      double alpha = 0.125 * twox * (twox2 * (3*twox2 - 10.) + 15.);
+      for (unsigned il = 0; il < Np; ++il) {
+        cache.result[il] = cache.avg[il] + alpha * cache.halfdiff[il];
+      }
     }
-    
-
   }
 
   std::vector<double> N0_;
-  std::vector<RateParamData> rateParamData_;
-  std::vector<LogNormalData> logNormalData_;
-  std::vector<AsymmLogNormalData> asymmLogNormalData_;
+  std::vector<RateParam> rateParamData_;
+  std::vector<LogNormal> logNormalData_;
 
+  std::vector<AsymmLogNormalCache> asymmCache_; // !do not serialize
+  
 
   // This can be generated on the fly, no need to persist
   std::vector<ProcToRateParam> procToRateParamLookup_; // inverse lookup to go from procs to rateParams
   
   std::vector<double> N_; // This is a cached value
+  std::vector<double> logValSum_; // This is a cahced value
+
   std::vector<double> rateParamValues_;
   std::vector<double> logNormalValues_;
-  std::vector<double> asymmLogNormalValues_;
 
+  bool init_;
   
 public:
   ProcessNorms() {};
 
   void update(std::vector<double> const& params); // sets new parameter values, nothing else
+  void init();
   void sync(); // make N vector up to date, following modes below. mark cache as clean
   /*
   Update modes:
@@ -251,6 +270,157 @@ public:
   void Hessian(unsigned i, unsigned j, std::vector<double> &result); // imply call to sync first
 
 };
+
+inline void ProcessNorms::init() {
+  N_.resize(N0_.size());
+  logValSum_.resize(N0_.size());
+
+  asymmCache_.resize(logNormalData_.size());
+
+  for (unsigned ip = 0; ip < logNormalData_.size(); ++ip) {
+    unsigned nAsymm = logNormalData_[ip].asymmProcessIndex.size();
+    asymmCache_[ip].resize(nAsymm);
+    for (unsigned il = 0; il < nAsymm; ++il) {
+      asymmCache_[ip].avg[il] = 0.5*(logNormalData_[ip].logKappaHi[il] - logNormalData_[ip].logKappaLo[il]);
+      asymmCache_[ip].halfdiff[il] = 0.5*(logNormalData_[ip].logKappaHi[il] + logNormalData_[ip].logKappaLo[il]);
+    }
+  }
+}
+
+inline void ProcessNorms::Grad(unsigned int i, std::vector<double> &result) {
+  for (unsigned ip = 0; ip < N0_.size(); ++ip) {
+    result[ip] = 0.;
+  }
+
+  /*
+    If i is a rateParam:
+     Only non-zero grads will be the list of procs this rateParam applies to. Loop through them,
+     set N = N0, multiple through by all *other* rateParams and then multiply by exp(logValSum) for that process
+  */
+  /*
+    If i is a log-normal:
+    Only non-zero grads will be the lists of procs (sym + asymm) this log-normal applies to. Loop through them,
+    Set N' = logKappa * N for sym,
+    Set N' = [logkappa + theta * logKappa'] * N for asymm
+  */
+}
+
+inline void ProcessNorms::Hessian(unsigned int i, unsigned int j, std::vector<double> &result) {
+  for (unsigned ip = 0; ip < N0_.size(); ++ip) {
+    result[ip] = 0.;
+  }
+
+  /*
+    If i == j and i is a rateParam:
+    Assuming each param can only appear once in the list of rateParams (?), all grads are zero
+
+    If i == j and i is log-normal:
+    Set N' = (logKappa^2) * N for sym
+    Set N' = [logKappa + theta * logKappa']^2 * N + [logKappa' + logKappa' + theta * logKappa''] * N
+  
+    If i != j and both are rateParams:
+    Only non-zero grads will be list of procs that both rateParams are applied to - so we have to find them
+
+    If i != j and both are log-normal:
+    Multiply out the approprate factors as above in Grad
+
+    If i !=j and one rateParam, one log-normal:
+    R'i * L + R * L'i
+    [R'i'j * L] + [R'i * L'j] + [R'j * L'i] + [R * L'i'j]
+  */
+}
+
+inline double ProductRuleOneNonZero(std::vector<double> const& f, unsigned nonzero, double df) {
+  double res = 1.;
+  auto tmp = f;
+  tmp[nonzero] = df;
+  for (unsigned i = 0; i < f.size(); ++i) {
+    res *= tmp[i];
+  }
+  return res;
+}
+
+inline double ProductRule(std::vector<double> const& f, std::vector<double> const& df) {
+  unsigned N = f.size();
+  std::vector<double> res(N, 1.);
+  std::vector<double> work(N, 0.);
+  for (unsigned i = 0; i < N; ++i) {
+    std::fill(work.begin(), work.end(), f[i]);
+    work[i] = df[i];
+    for (unsigned j = 0; j < N; ++j) {
+      res[j] *= work[j];
+    }
+  }
+  return std::accumulate(res.begin(), res.end(), 0.);
+}
+
+inline double ProductRule2(std::vector<double> const& f, std::vector<double> const& dfx, std::vector<double> const& dfy, std::vector<double> const& dfxy) {
+  unsigned N = f.size();
+  std::vector<double> res(N, 1.);
+  // std::vector<double> work(N, 0.);
+  // for (unsigned i = 0; i < N; ++i) {
+  //     for (unsigned j = 0; j < N; ++j)
+  //     std::fill(work.begin(), work.end(), f[i]);
+      
+  //     work[i] = df[i];
+  //     for (unsigned j = 0; j < N; ++j) {
+  //       res[j] *= work[j];
+  //     }
+  //   }
+  // }
+  return std::accumulate(res.begin(), res.end(), 0.);
+}
+
+inline void ProcessNorms::sync() {
+  if (!init_) {
+    init();
+  }
+
+  for (unsigned ip = 0; ip < N0_.size(); ++ip) {
+    N_[ip] = N0_[ip];
+    logValSum_[ip] = 0.;
+  };
+
+  for (unsigned ir = 0; ir < rateParamValues_.size(); ++ir) {
+    for (unsigned ipIdx = 0; ipIdx < rateParamData_[ir].processIndex.size(); ++ipIdx) {
+      unsigned ip = rateParamData_[ir].processIndex[ipIdx];
+      N_[ip] *= rateParamValues_[ir];
+    }
+  }
+
+
+  for (unsigned ip = 0; ip < N0_.size(); ++ip) {
+    unsigned nRp = procToRateParamLookup_[ip].rateParamIndex.size();
+    std::vector<double> f(nRp, 0.);
+    std::vector<double> df(nRp, 0.);
+    unsigned d_ir = 0; // derive wrt some parameter
+    for (unsigned irIdx = 0; irIdx < procToRateParamLookup_[ip].rateParamIndex.size(); ++irIdx) {
+      unsigned ir = procToRateParamLookup_[ip].rateParamIndex[irIdx];
+      f[irIdx] = rateParamValues_[ir];
+      df[irIdx] = (ir == d_ir) ? 1. : 0.;
+    }
+    ProductRule(f, df);
+  }
+
+
+
+  for (unsigned il = 0; il < logNormalValues_.size(); ++il) {
+    for (unsigned ipIdx = 0; ipIdx < logNormalData_[il].processIndex.size(); ++ipIdx) {
+      unsigned ip = logNormalData_[il].processIndex[ipIdx];
+      logValSum_[ip] += logNormalValues_[il] * logNormalData_[il].logKappa[ipIdx];
+    }
+    logKappaForX(logNormalValues_[il], logNormalData_[il], asymmCache_[il]);
+    for (unsigned ipIdx = 0; ipIdx < logNormalData_[il].asymmProcessIndex.size(); ++ipIdx) {
+      unsigned ip = logNormalData_[il].processIndex[ipIdx];
+      logValSum_[ip] += logNormalValues_[il] * asymmCache_[il].result[ipIdx];
+    }
+  }
+
+  for (unsigned ip = 0; ip < N0_.size(); ++ip) {
+    N_[ip] *= std::exp(logValSum_[ip]);
+  };
+
+}
 
 class NLLChannel {
   private:

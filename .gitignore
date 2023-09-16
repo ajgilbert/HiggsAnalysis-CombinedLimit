@@ -1,2 +1,7 @@
 site
 *.pyc
+.*/
+build/
+compile_commands.json
+combine_logger.out
+*.root
