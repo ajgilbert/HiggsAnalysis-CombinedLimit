@@ -1,6 +1,7 @@
 #include "../interface/CombineHarvester.h"
 #include "../interface/Process.h"
 #include "../interface/Utilities.h"
+#include "ProcessNormalization.h"
 #include "TH1F.h"
 #include "TRandom3.h"
 #include <Fit/Fitter.h>
@@ -32,7 +33,7 @@ using Eigen::ArrayXXi;
 using std::vector;
 
 struct ProcNorms {
-  ProcNorms(int Nx, int Np, int Nl, int Na) : Nx_(Nx), Np_(Np), Nl_(Nl), Na_(Na) {
+  ProcNorms(int Nx, int Np, int Nl, int Na, int Nr) : Nx_(Nx), Np_(Np), Nl_(Nl), Na_(Na), Nr_(Nr) {
     x_ = ArrayXd::Zero(Nx_);
     N0_ = ArrayXd::Zero(Np_);
     N_ = ArrayXd::Zero(Np_);
@@ -52,12 +53,21 @@ struct ProcNorms {
     Ax_ = ArrayXi::Constant(Nx_, -1);
     dNi_ = ArrayXXd::Zero(Np_, Nx_);
     dlogVali_ = ArrayXXd::Zero(Np_, Nx_);
+    drpProdi_ = ArrayXXd::Zero(Np_, Nx_);
     dNij_ = ArrayXd::Zero(Np_);
+    rpMask_ = ArrayXXi::Zero(Np_, Nr_);
+    rpResolved_ = ArrayXXd::Zero(Np_, Nr_);
+    rpOne_ = ArrayXd::Ones(Np_);
+    rpProd_ = ArrayXd(Np_);
+    rpScratch_ = ArrayXd(Np_);
+    Xr_ = ArrayXi::Constant(Nr_, -1);
+    Rx_ = ArrayXi::Constant(Nx_, -1);
   }
   int Nx_; // Number of parameters
   int Np_; // Number of processes
   int Nl_; // Number of parameters with a symmetric log-normal effect
   int Na_; // Number of parameters with an asymmetric log-normal effect
+  int Nr_; // Number of rateParams (direct multiplicative parameters)
 
   ArrayXd x_; // [Nx] Parameter values
 
@@ -85,8 +95,17 @@ struct ProcNorms {
   ArrayXi Xa_;      // [Na] x index of asymm. lnN parameter a
   ArrayXi Ax_;      // [Nx] a index of parameter x (-1 if not in l)
 
+  ArrayXXi rpMask_; // [Np][Nr] = 1 if affected by rateParam, 0 otherwise
+  ArrayXXd rpResolved_; // [Np][Nr]
+  ArrayXd rpOne_; // [Np]
+  ArrayXd rpProd_; // [Np] product over rateParams
+  ArrayXd rpScratch_; // [Np] product over rateParams
+  ArrayXi Xr_;    // [Nr] x index of rateParam
+  ArrayXi Rx_;    // [Nx] r index of rateParam
+
   ArrayXXd dNi_; // [Np][Nx] First derivative of N wrt. parameters i
   ArrayXXd dlogVali_; // [Np][Nx] First derivative of logVal wrt. parameters i
+  ArrayXXd drpProdi_; // [Np][Nx] First derivative of rpProd wrt. parameters i
   ArrayXd dNij_; // [Np] Second derivative of n wrt. paraemters i and j
 
   ArrayXd & aKappa(double x, unsigned ia) {
@@ -164,8 +183,14 @@ struct ProcNorms {
     }
   }
 
+  void ResolveRP() {
+    for (int ir = 0; ir < Nr_; ++ir) {
+      rpResolved_.col(ir) = rpMask_.col(ir).select(x_[Xr_[ir]], rpOne_);
+    }
+  }
+
   void Eval() {
-    SetCaches();
+    // SetCaches();
     logVal_ = 0.;
     for (int il = 0; il < Nl_; ++il) {
       logVal_ += x_[Xl_[il]] * lKappa_.col(il);
@@ -178,6 +203,13 @@ struct ProcNorms {
 
     lNorm_ = Eigen::exp(logVal_);
     N_ = N0_ * lNorm_;
+
+    rpProd_ = 1.;
+    ResolveRP();
+    for (int ir = 0; ir < Nr_; ++ir) {
+      rpProd_ *= rpResolved_.col(ir);
+    }
+    N_ *= rpProd_;
   }
 
   void Gradients() {
@@ -185,6 +217,7 @@ struct ProcNorms {
     dNi_ = 0.;
 
     dlogVali_ = 0.;
+    drpProdi_ = 0.;
 
     // Gradient is N * d(logVal_)
     // Let's start by calcuating d(logVal_) in dNi_:
@@ -197,25 +230,46 @@ struct ProcNorms {
       double x = x_[iX];
       dlogVali_.col(iX) += (aKappa(x, ia) + x * dAKappa(x, ia));
     }
+    for (int ir = 0; ir < Nr_; ++ir) {
+      int iX = Xr_[ir];
+      drpProdi_.col(iX) = rpMask_.col(ir).select(rpOne_, 0.);
+      for (int ir2 = 0; ir2 < Nr_; ++ir2) {
+        if (ir2 != ir) {
+          drpProdi_.col(iX) *= rpResolved_.col(ir2);
+        }
+      }
+    }
 
-    // Finish up by multiplying by N_
     for (int ix = 0; ix < Nx_; ++ix) {
-      dNi_.col(ix) = N_ * dlogVali_.col(ix);
+      dNi_.col(ix) = N_ * dlogVali_.col(ix) + N0_ * drpProdi_.col(ix) * lNorm_;
     }
   }
 
   void HessianElement(int i, int j) {
-    // dNij = N0 * dij(exp(logVal_)) = dj(N0 * exp(logVal_) * di(logVal_))
-    //                               = N0 * [dj(exp(logVal_))*di(logVal_) + ]
-    // so, 
-    // dij(logVal_) = dij(x*lKappa_ + x*aKappa_)
-    //              
     dNij_ = dlogVali_.col(i) * dlogVali_.col(j);
     if ((i == j) && Ax_[i] >= 0) {
       double x = x_[i];
       dNij_ += (2. * dAKappa(x, Ax_[i]) + x * d2AKappa(x, Ax_[i]));
     }
     dNij_ *= N_;
+
+    dNij_ += (N0_ * lNorm_ * (dlogVali_.col(i) * drpProdi_.col(j) + dlogVali_.col(j) * drpProdi_.col(i)));
+
+    // Still need to add N0 * lNorm * dij(rpProd).
+    // Only conditions under which this is non-zero:
+    //  - i and j both have rateParams
+    //  - i != j
+    if (Rx_[i] >= 0 && Rx_[j] >=0 && Rx_[i] != Rx_[j]) {
+      rpScratch_ = rpMask_.col(Rx_[i]).select(rpOne_, 0.) * rpMask_.col(Rx_[j]).select(rpOne_, 0.);
+      for (int ir = 0; ir < Nr_; ++ir) {
+        if (ir != Rx_[i] && ir != Rx_[j]) {
+          rpScratch_ *= rpResolved_.col(ir);
+        }
+      }
+      dNij_ += rpScratch_;
+
+    }
+
   }
 };
 
@@ -248,6 +302,9 @@ void QuickPrint(ProcNorms & pn) {
   std::cout << "aKappaHi = \n" << pn.aKappaHi_ << std::endl;
   std::cout << "aKappa = \n" << pn.aKappa_ << std::endl;
   std::cout << "dNi = \n" << pn.dNi_ << std::endl;
+  std::cout << "rpMask = \n" << pn.rpMask_ << std::endl;
+  std::cout << "rpResolved = \n" << pn.rpResolved_ << std::endl;
+  std::cout << "rpProd = \n" << pn.rpProd_ << std::endl;
   for (int i = 0; i < pn.Nx_; ++i) {
     for (int j = 0; j <= i; ++j) {
       pn.HessianElement(i, j);
@@ -259,7 +316,7 @@ void QuickPrint(ProcNorms & pn) {
 
 
 void SymTest() {
-  ProcNorms pn(2, 3, 2, 0);
+  ProcNorms pn(2, 3, 2, 0, 0);
   pn.N0_ << 10., 20., 30.;
   pn.lKappa_ << std::log(1.1), std::log(1.3),
                 std::log(1.1), 0.,
@@ -274,6 +331,26 @@ void SymTest() {
 
   pn.x_ << 1., -1.;
   QuickPrint(pn);
+}
+
+void RPTest() {
+  ProcNorms pn(4, 2, 1, 0, 3);
+  pn.N0_ << 10., 20.;
+  pn.Rx_ << 0, 1, 2, -1;
+  pn.Xr_ << 0, 1, 2;
+  pn.rpMask_ << 1, 1, 1,
+                0, 1, 1;
+  pn.Lx_ << -1, -1, -1, 0;
+  pn.Xl_ << 3;
+  pn.lKappa_ << std::log(1.1),
+                std::log(1.2);
+
+  pn.x_ << 1., 1., 1., 0.;
+  QuickPrint(pn);
+
+  pn.x_ << 2., 3., 4., 1.;
+  QuickPrint(pn);
+
 }
 
 ArrayXd NumericGrad(ProcNorms & pn, unsigned ix) {
@@ -292,7 +369,7 @@ ArrayXd NumericGrad(ProcNorms & pn, unsigned ix) {
 }
 
 void AsymTest(double test0, double test1) {
-  ProcNorms pn(2, 2, 1, 2);
+  ProcNorms pn(2, 2, 1, 2, 0);
   pn.N0_ << 10., 20.;
   pn.aKappaLo_ << std::log(0.7), std::log(0.9),
                   std::log(0.7), 0.;
@@ -351,7 +428,118 @@ void AsymTest(double test0, double test1) {
   // QuickPrint(pn);
 }
 
+class OptHistSum : public RooAbsReal {
+  OptHistSum(const char *name, const char *title, RooRealVar &x, int Np);
+
+  private:
+    ProcNorms pn_;
+};
+
+
 int main(int argc, char *argv[]) {
-  AsymTest(0, 0.);
+  // AsymTest(0, 0.);
+
+  RPTest();
+
+
+  /*
+  int nx = 5000;
+  int np = 1000;
+  int na = 5000;
+  ProcNorms pn(nx, np, 0, na, 0);
+
+  for (int ip = 0; ip < np; ++ ip) {
+    pn.N0_(ip) = 10.;
+  }
+
+  for (int ix = 0; ix < nx; ++ix) {
+    for (int ip = 0; ip < np; ++ ip) {
+      pn.aKappaLo_(ip, ix) = 0.95;
+      pn.aKappaHi_(ip, ix) = 1.05;
+
+    }
+    pn.Ax_(ix) = ix;
+    pn.Xa_(ix) = ix;
+  }
+  pn.SetCaches();
+
+
+  RooWorkspace wsp;
+  std::vector<RooRealVar *> rrv;
+  std::vector<ProcessNormalization *> pnv;
+  for (int ix = 0; ix < nx; ++ix) {
+    wsp.factory(TString::Format("x%i[0, -10, 10]", ix));
+    rrv.push_back(wsp.var(TString::Format("x%i", ix)));
+  }
+  for (int ip = 0; ip < np; ++ip) {
+    ProcessNormalization rpn(TString::Format("pn%i", ip), "", 10.);
+    for (int ix = 0; ix < nx; ++ix) {
+      // if (ix == ip) {
+        rpn.addAsymmLogNormal(0.95, 1.05, *(rrv[ix]));
+      // }
+    }
+    wsp.import(rpn);
+    pnv.push_back(dynamic_cast<ProcessNormalization *>(wsp.function(TString::Format("pn%i", ip))));
+  }
+
+  TRandom3 rng;
+  std::vector<double> x1(nx);
+  std::vector<double> x2(nx);
+  for (int ix = 0; ix < nx; ++ix) {
+    x1[ix] = rng.Uniform(-1, +1);
+    x2[ix] = rng.Uniform(-1, +1);
+    // x2[ix] = x1[ix];
+  }
+
+  int ntest = 1E2;
+  TStopwatch sw;
+  for (int itest = 0; itest < ntest; ++itest) {
+    for (int ix = 0; ix < nx; ++ix) {
+      pn.x_(ix) = x1[ix];
+    }
+    pn.Eval();
+    for (int ix = 0; ix < nx; ++ix) {
+      pn.x_(ix) = x2[ix];
+    }
+    pn.Eval();
+  }
+  sw.Stop();
+  sw.Print();
+
+  sw.Start(true);
+  for (int itest = 0; itest < ntest; ++itest) {
+    for (int ix = 0; ix < nx; ++ix) {
+      rrv[ix]->setVal(x1[ix]);
+    }
+    for (int ip = 0; ip < np; ++ip) {
+      pnv[ip]->getVal();
+    }
+    for (int ix = 0; ix < nx; ++ix) {
+      rrv[ix]->setVal(x2[ix]);
+    }
+    for (int ip = 0; ip < np; ++ip) {
+      pnv[ip]->getVal();
+    }
+  }
+  sw.Stop();
+  sw.Print();
+
+  sw.Start(true);
+  pn.Gradients();
+  for (int ix1 = 0; ix1 < nx; ++ix1) {
+    for (int ix2 = ix1; ix2 < nx; ++ix2) {
+      pn.HessianElement(ix1, ix2);
+    }
+  }
+  sw.Stop();
+  sw.Print();
+
+
+  // 270988-205432 = 65556 kbytes RSS when removing RooFit
+  // 270988-259132 = 11856 kbytes RSS when removing ProcNorms
+
+  */
+
+
   return 0;
 }
