@@ -96,6 +96,7 @@ private:
   std::string floatNuisances_;
   std::string freezeNuisanceGroups_;
   std::string freezeWithAttributes_;
+  std::string deepScanParameters_;
 
   // input-output related variables
   bool saveWorkspace_;

@@ -371,6 +371,74 @@ bool CascadeMinimizer::iterativeMinimize(double &minimumNLL,int verbose, bool ca
    return ret;
 }
 
+bool CascadeMinimizer::deepMinimize(int verbose, bool cascade) {
+  bool result = minimize(verbose, cascade);
+  RooArgList const& deepParams = CascadeMinimizerGlobalConfigs::O().deepScanParameters;
+  if (deepParams.empty()) return result;
+
+
+  if (!minimizer_.get()) remakeMinimizer();
+  int maxIterations = 1;
+  int scanPoints = 100;
+  std::vector<double> newVals(deepParams.size(), 0.);
+
+  for (int i = 0; i < maxIterations; ++i) {
+    std::cout << "Start of deepScan iteration " << i << std::endl;
+    deepParams.Print("v");
+    for (unsigned long p = 0; p < deepParams.size(); ++p) {
+      RooRealVar *var = dynamic_cast<RooRealVar*>(deepParams.at(p));
+      std::cout << "Beginning deep scan for parameter " << var->GetName() << std::endl;
+      var->Print();
+      double startval = var->getVal();
+      newVals[p] = startval;
+      double newVal = var->getVal();
+      double refNLL = nll_.getVal();
+      double newRefNLL = refNLL;
+      double min = var->getMin();
+      double max = var->getMax();
+      std::vector<double> y_vals(scanPoints, 0.);
+      std::vector<double> x_vals(scanPoints, 0.);
+      for (int point = 0; point < scanPoints; ++point) {
+        double x = min + double(point) * ((max - min) / double(scanPoints));
+        x_vals[point] = x;
+        var->setVal(x);
+        double pointNLL = nll_.getVal();
+        y_vals[point] = pointNLL;
+        std::cout << x << " " << pointNLL - refNLL << "\n";
+        if (pointNLL < newRefNLL) {
+          newVal = x;
+          newRefNLL = pointNLL;
+        }
+      }
+      if ((refNLL - newRefNLL) > 1E-4) {
+        std::cout << "Found better NLL at " << newVal << " with deltaNLL = " << (newRefNLL - refNLL) << std::endl;
+        newVals[p] = newVal;
+      }
+
+      int nminim = 0;
+      for (int point = 1; point < (scanPoints - 1); ++point) {
+        if (y_vals[point] < y_vals[point - 1] && y_vals[point] < y_vals[point + 1]) {
+          std::cout << "Found minimum at x = " << x_vals[point] << " [" << y_vals[point - 1] << ", " << y_vals[point] << ", " << y_vals[point + 1] << "]\n";
+          ++nminim;
+        }
+      }
+      if (nminim > 1) {
+        std::cout << "MULTIPLE MINIMA FOUND!" << std::endl;
+      }
+
+      var->setVal(startval);
+    }
+    for (unsigned long p = 0; p < deepParams.size(); ++p) {
+      RooRealVar *var = dynamic_cast<RooRealVar*>(deepParams.at(p));
+      var->setVal(newVals[p]);
+    }
+    result = minimize(verbose, cascade);
+    deepParams.Print("v");
+  }
+  return result;
+}
+
+
 bool CascadeMinimizer::minimize(int verbose, bool cascade) 
 {
     static int optConst = runtimedef::get("MINIMIZER_optimizeConst");

@@ -126,6 +126,7 @@ Combine::Combine() :
       ("setParameterRanges", po::value<string>(&setPhysicsModelParameterRangeExpression_)->default_value(""), "Set the range of relevant physics model parameters. Give a colon separated list of parameter ranges. Example: CV=0.0,2.0:CF=0.0,5.0")      
       ("defineBackgroundOnlyModelParameters", po::value<string>(&defineBackgroundOnlyModelParameterExpression_)->default_value(""), "If no background only (null) model is explicitly provided in physics model, one will be defined as these values of the POIs (default is r=0)")      
       ("redefineSignalPOIs", po::value<string>(&redefineSignalPOIs_)->default_value(""), "Redefines the POIs to be this comma-separated list of variables from the workspace.")      
+      ("deepScanParameters", po::value<string>(&deepScanParameters_)->default_value(""), "Redefines the POIs to be this comma-separated list of variables from the workspace.")      
       ("freezeParameters", po::value<string>(&freezeNuisances_)->default_value(""), "Set as constant all these parameters. use --freezeParameters allConstrainedNuisances to freeze all constrained nuisance parameters (i.e doesn't include rateParams etc)")      
       ("freezeNuisanceGroups", po::value<string>(&freezeNuisanceGroups_)->default_value(""), "Set as constant all these groups of nuisance parameters.")      
       ("freezeWithAttributes", po::value<string>(&freezeWithAttributes_)->default_value(""), "Set as constant all variables carrying one of these attribute strings.")      
@@ -636,6 +637,12 @@ void Combine::run(TString hlfFile, const std::string &dataset, double &limit, do
               nuisances = mc->GetNuisanceParameters();
           }
       } 
+  }
+
+  if (deepScanParameters_ != "") {
+    RooArgSet params(w->argSet(deepScanParameters_.c_str()));
+    // params.snapshot(CascadeMinimizerGlobalConfigs::O().deepScanParameters)
+    CascadeMinimizerGlobalConfigs::O().deepScanParameters.add(params);
   }
 
   // Always reset the POIs to floating (post-fit workspaces can actually have them frozen in some cases, in any case they can be re-frozen in the next step 
