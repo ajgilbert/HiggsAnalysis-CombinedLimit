@@ -374,67 +374,142 @@ bool CascadeMinimizer::iterativeMinimize(double &minimumNLL,int verbose, bool ca
 bool CascadeMinimizer::deepMinimize(int verbose, bool cascade) {
   bool result = minimize(verbose, cascade);
   RooArgList const& deepParams = CascadeMinimizerGlobalConfigs::O().deepScanParameters;
+
   if (deepParams.empty()) return result;
+
+  std::vector<RooRealVar *> rrvs(deepParams.size());
+  for (unsigned long p = 0; p < deepParams.size(); ++p) {
+    rrvs[p] = dynamic_cast<RooRealVar*>(deepParams.at(p));
+  }
 
 
   if (!minimizer_.get()) remakeMinimizer();
-  int maxIterations = 1;
-  int scanPoints = 100;
-  std::vector<double> newVals(deepParams.size(), 0.);
+  int maxIterations = 3;
+  int scanPoints = 200;
+  // std::vector<double> newVals(deepParams.size(), 0.);
+
+  // First phase - do fast scan of each parameter, identify the best decrease in NLL among all of them
+  // then shift just that one parameter and refit
+  // Repeat this until we don't find any decrease. NB: no requirement here that we shift into a different minimum 
+
 
   for (int i = 0; i < maxIterations; ++i) {
-    std::cout << "Start of deepScan iteration " << i << std::endl;
+    std::cout << "Start of deepScan (phase 1) iteration " << i << std::endl;
     deepParams.Print("v");
+
+    double refNLL = nll_.getVal();
+
+    int bestOverallParam = -1;
+    double bestOverallNewX = 0.;
+    double bestOverallNLL = refNLL;
+
+  
     for (unsigned long p = 0; p < deepParams.size(); ++p) {
-      RooRealVar *var = dynamic_cast<RooRealVar*>(deepParams.at(p));
+      RooRealVar *var = rrvs[p];
       std::cout << "Beginning deep scan for parameter " << var->GetName() << std::endl;
       var->Print();
       double startval = var->getVal();
-      newVals[p] = startval;
-      double newVal = var->getVal();
-      double refNLL = nll_.getVal();
-      double newRefNLL = refNLL;
-      double min = var->getMin();
-      double max = var->getMax();
-      std::vector<double> y_vals(scanPoints, 0.);
-      std::vector<double> x_vals(scanPoints, 0.);
+      // std::vector<double> y_vals(scanPoints, 0.);
+      // std::vector<double> x_vals(scanPoints, 0.);
       for (int point = 0; point < scanPoints; ++point) {
-        double x = min + double(point) * ((max - min) / double(scanPoints));
-        x_vals[point] = x;
+        double x = var->getMin() + double(point) * ((var->getMax() - var->getMin()) / double(scanPoints));
+        // x_vals[point] = x;
         var->setVal(x);
         double pointNLL = nll_.getVal();
-        y_vals[point] = pointNLL;
-        std::cout << x << " " << pointNLL - refNLL << "\n";
-        if (pointNLL < newRefNLL) {
-          newVal = x;
-          newRefNLL = pointNLL;
+        // y_vals[point] = pointNLL;
+        // std::cout << x << " " << pointNLL - refNLL << "\n";
+        if (pointNLL < bestOverallNLL) {
+          bestOverallNLL = pointNLL;
+          bestOverallParam = p;
+          bestOverallNewX = x;
         }
       }
-      if ((refNLL - newRefNLL) > 1E-4) {
-        std::cout << "Found better NLL at " << newVal << " with deltaNLL = " << (newRefNLL - refNLL) << std::endl;
-        newVals[p] = newVal;
-      }
-
-      int nminim = 0;
-      for (int point = 1; point < (scanPoints - 1); ++point) {
-        if (y_vals[point] < y_vals[point - 1] && y_vals[point] < y_vals[point + 1]) {
-          std::cout << "Found minimum at x = " << x_vals[point] << " [" << y_vals[point - 1] << ", " << y_vals[point] << ", " << y_vals[point + 1] << "]\n";
-          ++nminim;
-        }
-      }
-      if (nminim > 1) {
-        std::cout << "MULTIPLE MINIMA FOUND!" << std::endl;
-      }
-
       var->setVal(startval);
+    } // Loop through parameters
+
+    // Did we find an improvements?
+    if (bestOverallParam >= 0 && (refNLL - bestOverallNLL) > 1E-4) {
+      std::cout << "Found better NLL at " << deepParams.at(bestOverallParam)->GetName() << " = " << bestOverallNewX << ", decreasing NLL by "  << (refNLL - bestOverallNLL) << std::endl;
+      rrvs[bestOverallParam]->setVal(bestOverallNewX);
+    } else {
+      std::cout << "No improvement found, continue to the next step" << std::endl;
+      break;
     }
-    for (unsigned long p = 0; p < deepParams.size(); ++p) {
-      RooRealVar *var = dynamic_cast<RooRealVar*>(deepParams.at(p));
-      var->setVal(newVals[p]);
-    }
+  
     result = minimize(verbose, cascade);
     deepParams.Print("v");
   }
+
+
+  // 2nd phase scan again - this time we'll look for local minima that are not *much* higher than our current minimum
+  // First we'll want to save a snapshot of all parameters, probably
+  // For each parameter we hit in this situation, set the parameter to the other local minimum, and profile.
+  // If the NLL is now better, great, move on to the next parameter.
+
+  for (int i = 0; i < maxIterations; ++i) {
+    bool found_improvement = false;
+    std::cout << "Start of deepScan (phase 2) iteration " << i << std::endl;
+
+    for (unsigned long p = 0; p < deepParams.size(); ++p) {
+      double refNLL = nll_.getVal();
+      RooRealVar *var = rrvs[p];
+      std::cout << "Beginning deep scan for parameter " << var->GetName() << std::endl;
+      var->Print();
+      double startval = var->getVal();
+      std::vector<double> y_vals(scanPoints, 0.);
+      std::vector<double> x_vals(scanPoints, 0.);
+      for (int point = 0; point < scanPoints; ++point) {
+        double x = var->getMin() + double(point) * ((var->getMax() - var->getMin()) / double(scanPoints));
+        x_vals[point] = x;
+        var->setVal(x);
+        y_vals[point] = nll_.getVal();
+      }
+      var->setVal(startval);
+
+      double highest_local_min = refNLL;
+      double highest_local_min_x = 0.;
+      int nminim = 0;
+
+      for (int point = 1; point < (scanPoints - 1); ++point) {
+        if (y_vals[point] < y_vals[point - 1] && y_vals[point] < y_vals[point + 1]) {
+          std::cout << "Found minimum at x = " << x_vals[point] << " [" << y_vals[point - 1] << ", " << y_vals[point] << ", " << y_vals[point + 1] << "]\n";
+          if ((y_vals[point] - refNLL) < 4.) {
+              ++nminim;
+              if (y_vals[point] > highest_local_min) {
+                highest_local_min = y_vals[point];
+                highest_local_min_x = x_vals[point];
+              }
+          }
+        }
+      }
+      if (nminim >= 2 && highest_local_min > refNLL) {
+        std::cout << "Found a higher local minimum at x = " << highest_local_min_x << " (startval = " << startval << "), increasing NLL by " << (highest_local_min - refNLL) << std::endl;
+
+        RooArgSet beforeParameters;
+        std::unique_ptr<RooArgSet> nllParams(nll_.getParameters((const RooArgSet*)0));
+        // nllParams->remove(CascadeMinimizerGlobalConfigs::O().pdfCategories);
+        (nllParams)->snapshot(beforeParameters);
+
+        var->setVal(highest_local_min_x);
+        result = minimize(verbose, cascade);
+        double newNLL = nll_.getVal();
+
+        if (newNLL < refNLL) {
+          std::cout << "After fitting, NLL reduces by " << (refNLL - newNLL) << std::endl;
+          var->Print();
+          found_improvement = true;
+        } else {
+          std::cout << "After fitting, NLL increases by " << (newNLL - refNLL) << ", reverting" << std::endl;
+          *nllParams = beforeParameters;
+          std::cout << "After reset, x = " << var->getVal() << " and NLL = " << nll_.getVal() << std::endl;
+        }
+      }
+    } // Loop through parameters
+    if (!found_improvement) break;
+  }
+
+
+
   return result;
 }
 
