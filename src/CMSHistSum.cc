@@ -257,9 +257,9 @@ void CMSHistSum::updateMorphs() const {
   for (unsigned ip = 0; ip < compcache_.size(); ++ip) {
     if (fast_mode_ == 0) {
       compcache_[ip].CopyValues(storage_[process_fields_[ip]]);
-    }
-    if (vtype_[ip] == CMSHistFunc::VerticalSetting::LogQuadLinear) {
-      compcache_[ip].Log();
+      if (vtype_[ip] == CMSHistFunc::VerticalSetting::LogQuadLinear) {
+        compcache_[ip].Log();
+      }
     }
   }
   int n_morphs = vmorphpars_.size();
@@ -336,6 +336,7 @@ void CMSHistSum::updateCache() const {
       staging_ = compcache_[i];
       if (vtype_[i] == CMSHistFunc::VerticalSetting::LogQuadLinear) {
         staging_.Exp();
+        staging_.Scale(storage_[process_fields_[i]].Integral() / staging_.Integral());
       }
       staging_.CropUnderflows();
       vectorized::mul_add(valsum_.size(), coeffvals_[i], &(staging_[0]), &valsum_[0]);
