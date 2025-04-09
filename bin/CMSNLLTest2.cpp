@@ -32,6 +32,11 @@ using Eigen::ArrayXXd;
 using Eigen::ArrayXXi;
 using std::vector;
 
+struct Values {
+    int Nx_;
+    ArrayXd x_; // [Nx] Parameter values
+};
+
 struct ProcNorms {
   ProcNorms(int Nx, int Np, int Nl, int Na, int Nr) : Nx_(Nx), Np_(Np), Nl_(Nl), Na_(Na), Nr_(Nr) {
     x_ = ArrayXd::Zero(Nx_);
@@ -266,11 +271,53 @@ struct ProcNorms {
           rpScratch_ *= rpResolved_.col(ir);
         }
       }
-      dNij_ += rpScratch_;
+      dNij_ += rpScratch_; // TODO: missing N0 * lNorm_???
 
     }
 
   }
+};
+
+struct CMSChannel {
+  int Np_;
+  int Nb_;
+
+  ArrayXXd y0_; // [Nb][Np]
+
+  ArrayXd ysum_; // [Nb]
+
+  ArrayXXd dysumi_; // [Nb][Nx]
+  ArrayXd dysumij_; // [Nb]
+
+  
+  ProcNorms pc_;
+
+  void Eval() {
+    pc_.Eval();
+
+    ysum_ = 0.;
+
+    for (int ip = 0; ip < Np_; ++ip) {
+      ysum_ += (y0_.col(ip) * pc_.N_[ip]);
+    }
+  };
+};
+
+struct CMSChannelNLL {
+  CMSChannel chn_;
+  ArrayXd data_;
+
+  ArrayXd nll_y_;
+  double nll_;
+  void Eval() {
+    chn_.Eval();
+    nll_y_ =  chn_.ysum_ - data_ * chn_.ysum_.log();
+    // dnll_y = d(ysum) - data * [(d(ysum) / ysum) ]
+    // didj(nll_y) = didj(ysum) - data * dj [di(ysum) / ysum]
+    //             =     "      - data * [didj(ysum) / ysum + di(ysum)*dj(1/ysum)]
+    //                                   [didj(ysum) / ysum + (-1) * ysum^-2 *di(ysum) *dj*(ysum) )]
+    nll_ = nll_y_.sum();
+  };
 };
 
 std::vector<double> BinVec(TH1 &h) {
